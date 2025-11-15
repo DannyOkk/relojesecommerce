@@ -220,7 +220,7 @@ def change_password(request):
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
 
-@api_view(['GET', 'PUT', 'DELETE'])
+@api_view(['GET', 'PUT', 'PATCH', 'DELETE'])
 @permission_classes([IsAuthenticated])
 def manage_user(request, user_id):
     """Gestionar usuarios - Solo admins pueden modificar otros usuarios"""
@@ -262,8 +262,8 @@ def manage_user(request, user_id):
             
             return Response(user_data, status=status.HTTP_200_OK)
         
-        elif request.method == 'PUT':
-            # Actualizar usuario
+        elif request.method in ['PUT', 'PATCH']:
+            # Actualizar usuario (PUT = completo, PATCH = parcial)
             data = request.data
             
             # Campos que el admin puede actualizar
