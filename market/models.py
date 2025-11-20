@@ -17,20 +17,88 @@ class Category(models.Model):
         verbose_name_plural = "Categories"  
 
 class Product(models.Model):
+    # Información básica
     nombre = models.CharField(max_length=250)
     descripcion = models.TextField()
+    slug = models.SlugField(max_length=300, unique=True, blank=True)
+    
+    # Precios
     precio = models.DecimalField(max_digits=10, decimal_places=2)
-    stock = models.PositiveIntegerField()
+    precio_proveedor = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    precio_manual = models.BooleanField(default=False)  # Si el admin modificó el precio manualmente
+    
+    # Ofertas
+    en_oferta = models.BooleanField(default=False)
+    precio_oferta_proveedor = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    
+    # Stock (sistema dual)
+    stock = models.PositiveIntegerField(default=0)  # Deprecated - usar stock_proveedor
+    stock_proveedor = models.PositiveIntegerField(default=0)  # Stock del proveedor
+    stock_vendido = models.PositiveIntegerField(default=0)  # Stock que ya vendiste
+    stock_ilimitado = models.BooleanField(default=False)  # Si el proveedor tiene stock infinito
+    
+    # Categoría e imágenes
     categoria = models.ForeignKey(Category, on_delete=models.CASCADE)
-    imagen = models.ImageField(upload_to='products/', blank=True, null=True)
-    #proveedor = models.ForeignKey(Supplier, on_delete=models.SET_NULL, null=True, blank=True)
+    imagen = models.ImageField(upload_to='products/', blank=True, null=True)  # Deprecated
+    imagenes = models.JSONField(default=list, blank=True)  # Array de URLs de imágenes
+    
+    # Dropshipping
+    external_id = models.CharField(max_length=100, unique=True, null=True, blank=True)
+    external_url = models.URLField(max_length=500, null=True, blank=True)
+    last_sync = models.DateTimeField(null=True, blank=True)
+    
+    # Control
+    desactivado = models.BooleanField(default=False)
+
+    @property
+    def stock_disponible(self):
+        """Stock disponible para vender (stock_proveedor - stock_vendido)"""
+        if self.stock_ilimitado:
+            return 999999
+        return max(0, self.stock_proveedor - self.stock_vendido)
+    
+    @property
+    def disponible(self):
+        """Producto disponible si tiene stock y no está desactivado"""
+        return self.stock_disponible > 0 and not self.desactivado
+    
+    @property
+    def imagen_principal(self):
+        """Retorna la primera imagen del array de imágenes"""
+        if self.imagenes and len(self.imagenes) > 0:
+            return self.imagenes[0]
+        return None
+    
+    @property
+    def precio_final(self):
+        """Precio que ve el cliente (considera ofertas)"""
+        if self.en_oferta and self.precio_oferta_proveedor:
+            return self.precio_oferta_proveedor * 2  # Markup del 100%
+        return self.precio
+
+    def save(self, *args, **kwargs):
+        # Auto-generar slug si no existe
+        if not self.slug:
+            from django.utils.text import slugify
+            base_slug = slugify(self.nombre)
+            slug = base_slug
+            counter = 1
+            while Product.objects.filter(slug=slug).exists():
+                slug = f"{base_slug}-{counter}"
+                counter += 1
+            self.slug = slug
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return self.nombre
     
     class Meta:
         verbose_name = "Product"  
-        verbose_name_plural = "Products"  
+        verbose_name_plural = "Products"
+        indexes = [
+            models.Index(fields=['external_id']),
+            models.Index(fields=['slug']),
+        ]  
 
 class Order(models.Model):
     ESTADOS = [
@@ -57,9 +125,12 @@ class Order(models.Model):
         if self.pk:  # Solo si el pedido ya existe
             pedido_anterior = Order.objects.get(pk=self.pk)
             if pedido_anterior.estado != 'cancelado' and self.estado == 'cancelado':
-                # Si el pedido se cancela, restituir stock de cada producto
+                # Si el pedido se cancela, devolver stock vendido
                 for detalle in self.detalles.all():
-                    detalle.producto.stock += detalle.cantidad
+                    detalle.producto.stock_vendido -= detalle.cantidad
+                    # Asegurar que no sea negativo
+                    if detalle.producto.stock_vendido < 0:
+                        detalle.producto.stock_vendido = 0
                     detalle.producto.save()
 
         super().save(*args, **kwargs)

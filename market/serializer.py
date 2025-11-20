@@ -18,10 +18,25 @@ class ProductSerializer(serializers.ModelSerializer):
     imagen = serializers.ImageField(required=False, allow_null=True)
     # Campo derivado para exponer la URL de la imagen
     imagen_url = serializers.SerializerMethodField(read_only=True)
+    # Campos calculados
+    stock_disponible = serializers.ReadOnlyField()
+    disponible = serializers.ReadOnlyField()
+    imagen_principal = serializers.ReadOnlyField()
+    precio_final = serializers.ReadOnlyField()
     
     class Meta:
         model = Product
-        fields = ['id', 'nombre', 'descripcion', 'precio', 'stock', 'categoria', 'imagen', 'imagen_url']
+        fields = [
+            'id', 'nombre', 'descripcion', 'precio', 'stock', 'categoria',
+            'imagen', 'imagen_url',
+            # Campos de dropshipping
+            'external_id', 'slug', 'precio_proveedor', 'precio_manual',
+            'stock_proveedor', 'stock_vendido', 'stock_ilimitado',
+            'imagenes', 'external_url', 'last_sync',
+            'en_oferta', 'precio_oferta_proveedor', 'desactivado',
+            # Campos calculados
+            'stock_disponible', 'disponible', 'imagen_principal', 'precio_final'
+        ]
 
     def get_imagen_url(self, obj):
         # Si cloudinary retorna URL absoluta, esto la devuelve tal cual

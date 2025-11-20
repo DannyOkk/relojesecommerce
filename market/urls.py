@@ -13,5 +13,11 @@ router.register(r'cart-items', views.CartItemViewSet, basename='cartitem')  # ‚≠
 router.register(r'favorites', views.FavoriteViewSet, basename='favorites')
 
 urlpatterns = [
-    path('market/model/', include(router.urls))
+    path('market/model/', include(router.urls)),
+    
+    # Endpoints de sincronizaci√≥n de productos
+    path('market/sync-external/', views.manual_sync_products, name='manual-sync-products'),
+    path('market/products/<int:pk>/update-price/', views.update_product_price, name='update-product-price'),
+    path('market/products/<int:pk>/reset-stock/', views.reset_stock_vendido, name='reset-stock-vendido'),
+    path('market/products/bulk-markup/', views.bulk_update_markup, name='bulk-update-markup'),
 ]

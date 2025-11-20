@@ -78,9 +78,9 @@ class ProductViewSet(viewsets.ModelViewSet):
             )
         
         # 4. Validar que haya suficiente stock
-        if cantidad > producto.stock:
+        if cantidad > producto.stock_disponible:
             return Response(
-                {'error': f'Stock insuficiente. Solo hay {producto.stock} unidades disponibles'}, 
+                {'error': f'Stock insuficiente. Solo hay {producto.stock_disponible} unidades disponibles'}, 
                 status=status.HTTP_400_BAD_REQUEST
             )
         
@@ -92,9 +92,9 @@ class ProductViewSet(viewsets.ModelViewSet):
             item = CartItem.objects.get(carrito=carrito, producto=producto)
             # 6.1 Si existe, actualizar cantidad (verificando stock)
             nueva_cantidad = item.cantidad + cantidad
-            if nueva_cantidad > producto.stock:
+            if nueva_cantidad > producto.stock_disponible:
                 return Response(
-                    {'error': f'Stock insuficiente. Solo hay {producto.stock} unidades disponibles'}, 
+                    {'error': f'Stock insuficiente. Solo hay {producto.stock_disponible} unidades disponibles'}, 
                     status=status.HTTP_400_BAD_REQUEST
                 )
             item.cantidad = nueva_cantidad
@@ -375,9 +375,9 @@ class CartViewSet(viewsets.ModelViewSet):
         
         # Verificar stock disponible para todos los productos (primer chequeo)
         for item in carrito.items.all():
-            if item.cantidad > item.producto.stock:
+            if item.cantidad > item.producto.stock_disponible:
                 return Response(
-                    {'error': f'Stock insuficiente para {item.producto.nombre}. Solo hay {item.producto.stock} unidades disponibles'}, 
+                    {'error': f'Stock insuficiente para {item.producto.nombre}. Solo hay {item.producto.stock_disponible} unidades disponibles'}, 
                     status=status.HTTP_400_BAD_REQUEST
                 )
             
@@ -397,11 +397,11 @@ class CartViewSet(viewsets.ModelViewSet):
             item.producto.refresh_from_db()
             
             # Verificar stock nuevamente (segundo chequeo)
-            if item.cantidad > item.producto.stock:
+            if item.cantidad > item.producto.stock_disponible:
                 # Si falla, eliminar el pedido creado y retornar error
                 pedido.delete()
                 return Response(
-                    {'error': f'Stock insuficiente para {item.producto.nombre}. Solo hay {item.producto.stock} unidades disponibles'}, 
+                    {'error': f'Stock insuficiente para {item.producto.nombre}. Solo hay {item.producto.stock_disponible} unidades disponibles'}, 
                     status=status.HTTP_400_BAD_REQUEST
                 )
             
@@ -413,8 +413,8 @@ class CartViewSet(viewsets.ModelViewSet):
                 subtotal=item.cantidad * item.producto.precio
             )
             
-            # Reducir el stock
-            item.producto.stock -= item.cantidad
+            # Incrementar stock vendido
+            item.producto.stock_vendido += item.cantidad
             item.producto.save()
         
         # Vaciar el carrito
@@ -662,9 +662,9 @@ class CartItemViewSet(viewsets.ModelViewSet):
             }, status=status.HTTP_200_OK)
         
         # Validar stock disponible
-        if cantidad > instance.producto.stock:
+        if cantidad > instance.producto.stock_disponible:
             return Response({
-                'error': f'Stock insuficiente. Solo hay {instance.producto.stock} unidades disponibles'
+                'error': f'Stock insuficiente. Solo hay {instance.producto.stock_disponible} unidades disponibles'
             }, status=status.HTTP_400_BAD_REQUEST)
         
         # Actualizar cantidad
@@ -743,3 +743,178 @@ class FavoriteViewSet(viewsets.ModelViewSet):
             if ok:
                 created += 1
         return Response({'merged': created}, status=status.HTTP_200_OK)
+
+
+# ============================================================
+# ENDPOINTS PARA SINCRONIZACIÓN DE PRODUCTOS EXTERNOS
+# ============================================================
+
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAdminUser
+from market.scraper import sync_external_products
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+@api_view(['POST'])
+@permission_classes([IsAdminUser])
+def manual_sync_products(request):
+    """
+    Endpoint para sincronización manual de productos externos.
+    Solo accesible por administradores.
+    
+    POST /api/products/sync-external/
+    
+    Returns:
+        {
+            "success": true,
+            "productos_nuevos": 10,
+            "productos_actualizados": 517,
+            "total": 527,
+            "desactivados": 0,
+            "errores": []
+        }
+    """
+    try:
+        logger.info("Sincronización manual iniciada por usuario: " + request.user.username)
+        resultado = sync_external_products()
+        
+        return Response(resultado, status=status.HTTP_200_OK)
+        
+    except Exception as e:
+        logger.error(f"Error en sincronización manual: {str(e)}")
+        return Response({
+            'success': False,
+            'error': str(e)
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['PATCH'])
+@permission_classes([IsAdminUser])
+def update_product_price(request, pk):
+    """
+    Actualiza el precio de un producto manualmente.
+    Marca el precio como manual para que el scraper no lo sobrescriba.
+    
+    PATCH /api/products/<id>/update-price/
+    Body: {"precio": 15000}
+    
+    Returns:
+        {
+            "success": true,
+            "producto": {...}
+        }
+    """
+    try:
+        producto = Product.objects.get(pk=pk)
+        nuevo_precio = request.data.get('precio')
+        
+        if not nuevo_precio:
+            return Response({
+                'success': False,
+                'error': 'El campo precio es requerido'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        producto.precio = float(nuevo_precio)
+        producto.precio_manual = True
+        producto.save()
+        
+        serializer = ProductSerializer(producto)
+        
+        return Response({
+            'success': True,
+            'producto': serializer.data
+        }, status=status.HTTP_200_OK)
+        
+    except Product.DoesNotExist:
+        return Response({
+            'success': False,
+            'error': 'Producto no encontrado'
+        }, status=status.HTTP_404_NOT_FOUND)
+    except Exception as e:
+        return Response({
+            'success': False,
+            'error': str(e)
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+@permission_classes([IsAdminUser])
+def reset_stock_vendido(request, pk):
+    """
+    Resetea el stock vendido cuando recibís los productos del proveedor.
+    
+    POST /api/products/<id>/reset-stock/
+    
+    Returns:
+        {
+            "success": true,
+            "stock_disponible": 19
+        }
+    """
+    try:
+        producto = Product.objects.get(pk=pk)
+        producto.stock_vendido = 0
+        producto.save()
+        
+        return Response({
+            'success': True,
+            'stock_disponible': producto.stock_disponible
+        }, status=status.HTTP_200_OK)
+        
+    except Product.DoesNotExist:
+        return Response({
+            'success': False,
+            'error': 'Producto no encontrado'
+        }, status=status.HTTP_404_NOT_FOUND)
+    except Exception as e:
+        return Response({
+            'success': False,
+            'error': str(e)
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+@permission_classes([IsAdminUser])
+def bulk_update_markup(request):
+    """
+    Recalcula los precios de todos los productos con un nuevo markup.
+    Solo afecta productos que NO tienen precio manual.
+    
+    POST /api/products/bulk-markup/
+    Body: {"markup_percentage": 100}  // 100% = precio x2
+    
+    Returns:
+        {
+            "success": true,
+            "productos_actualizados": 527
+        }
+    """
+    try:
+        markup_percentage = float(request.data.get('markup_percentage', 100))
+        markup_multiplier = 1 + (markup_percentage / 100)
+        
+        # Solo actualizar productos sin precio manual y con precio_proveedor
+        productos = Product.objects.filter(
+            precio_manual=False,
+            precio_proveedor__isnull=False
+        )
+        
+        count = 0
+        for producto in productos:
+            producto.precio = float(producto.precio_proveedor) * markup_multiplier
+            producto.save()
+            count += 1
+        
+        return Response({
+            'success': True,
+            'productos_actualizados': count,
+            'markup_aplicado': markup_percentage
+        }, status=status.HTTP_200_OK)
+        
+    except Exception as e:
+        return Response({
+            'success': False,
+            'error': str(e)
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

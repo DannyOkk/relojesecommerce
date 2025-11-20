@@ -45,6 +45,7 @@ INSTALLED_APPS = [
     'account_admin',
     'rest_framework_simplejwt',
     'rest_framework_simplejwt.token_blacklist',
+    'Velorum.apps.VelorumConfig',
 ]
 
 MIDDLEWARE = [
